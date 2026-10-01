@@ -1,0 +1,14 @@
+name = "izmanager-notify-cron"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Chạy mỗi phút. Worker chỉ "đánh thức" endpoint cron trên Vercel; mọi việc thật
+# (quét job, gửi Telegram) làm ở server Next.js.
+[triggers]
+crons = ["* * * * *"]
+
+# TARGET_URL = endpoint cron đã deploy trên Vercel.
+# CRON_SECRET đặt bằng SECRET (không ghi ở đây):
+#   npx wrangler secret put CRON_SECRET
+[vars]
+TARGET_URL = "https://izmanagerweb.vercel.app/api/cron/notify-tts"
