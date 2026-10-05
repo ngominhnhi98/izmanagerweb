@@ -150,6 +150,8 @@ export default function Page() {
 
   const busyRef = useRef(false);
   const dirtyRef = useRef(false);
+  // ETag lần tải trước (theo đúng URL) → gửi If-None-Match; BE trả 304 rỗng khi không đổi.
+  const etagRef = useRef({});
   const load = useCallback(async () => {
     if (busyRef.current) { dirtyRef.current = true; return; }   // đang tải → hẹn tải lại sau
     busyRef.current = true;
@@ -162,9 +164,19 @@ export default function Page() {
         if (deletedRef.current) qs.set("scope", "deleted");
         if (qRef.current) qs.set("q", qRef.current);
         try {
+          const get = async (url) => {
+            const tag = etagRef.current[url];
+            const r = await fetch(url, { cache: "no-store", signal: ctrl.signal,
+              headers: tag ? { "if-none-match": tag } : {} });
+            if (r.status === 304) return null;              // y nguyên → giữ state cũ
+            const et = r.headers.get("etag");
+            const body = await r.json();
+            if (r.ok && et) etagRef.current = { ...etagRef.current, [url]: et };
+            return body;
+          };
           const [dj, dm] = await Promise.all([
-            fetch(`/api/jobs?${qs}`, { cache: "no-store", signal: ctrl.signal }).then((r) => r.json()).catch(() => null),
-            fetch("/api/machines", { cache: "no-store", signal: ctrl.signal }).then((r) => r.json()).catch(() => null),
+            get(`/api/jobs?${qs}`).catch(() => null),
+            get("/api/machines").catch(() => null),
           ]);
           if (dj) { setJobs(dj.items || []); setTotal(dj.total ?? (dj.items || []).length); setSrvStats(dj.stats || null); }
           if (Array.isArray(dm)) setMachines(dm);
@@ -182,15 +194,16 @@ export default function Page() {
     return () => clearTimeout(t);
   }, [search]);
   useEffect(() => { setLimit(PAGE); }, [qServer, showDeleted]);   // đổi lọc → về trang đầu
-  useEffect(() => { setJobs([]); }, [showDeleted]);               // đổi scope → xoá bảng cũ
+  // đổi scope → xoá bảng cũ; bỏ luôn ETag, không thì quay lại scope cũ nhận 304 → bảng trống
+  useEffect(() => { setJobs([]); etagRef.current = {}; }, [showDeleted]);
   // Nạp lại khi ĐỔI THAM SỐ (từ khoá / scope / trần). load serialized → không chồng, không huỷ.
   useEffect(() => { load(); }, [qServer, showDeleted, limit, load]);
-  // Poll NỐI TIẾP mỗi 8s (load serialized nên nhịp không bao giờ chồng chéo).
-  useEffect(() => {
-    let stop = false, t;
-    const tick = async () => { await load(); if (!stop) t = setTimeout(tick, 8000); };
-    t = setTimeout(tick, 8000);
-    return () => { stop = true; clearTimeout(t); };
+  // KHÔNG poll: mỗi lượt tải = 2 invocation FE + 2 BE trên Vercel (gói Hobby từng bị khoá).
+  // Bảng chỉ tải khi mở trang, đổi lọc, sau thao tác, hoặc bấm "↻ Làm mới".
+  const [reloading, setReloading] = useState(false);
+  const reloadAll = useCallback(async () => {
+    setReloading(true);
+    try { await load(); } finally { setReloading(false); }
   }, [load]);
 
   // Chi tiết: CHỈ tải 1 lần khi mở (tránh nhấp nháy / video reload liên tục)
@@ -395,6 +408,10 @@ export default function Page() {
         <input type="search" value={search} onChange={(e) => setSearch(e.target.value)}
           placeholder="🔎 Tìm link · tiêu đề · ghi chú · #id"
           style={{ minWidth: 240, flex: "1 1 240px" }} />
+        <button className="btn sm ghost" disabled={reloading} onClick={reloadAll}
+          title="Tải lại danh sách task (trang không tự cập nhật)">
+          {reloading ? "…" : "↻ Làm mới"}
+        </button>
         {(machineFilter || toolFilter || statusFilter || search.trim()) &&
           <button className="btn sm ghost" onClick={() => { setMachineFilter(""); setToolFilter(""); setStatusFilter(""); setSearch(""); }}>✕ xoá lọc</button>}
         <span style={{ color: "var(--muted2)", marginLeft: "auto", fontSize: 12 }}>
@@ -622,19 +639,18 @@ function ThumbBox({ id, d }) {
 
   // Tự làm mới RIÊNG khối này — không gọi onReload của Drawer (nó xoá trắng chi tiết rồi tải
   // lại, form đang điền sẽ mất và cả khung nhấp nháy mỗi lần).
+  const tagRef = useRef(null);   // ETag lần trước → 304 rỗng khi chưa có ảnh mới
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch(`/api/jobs/${id}`, { cache: "no-store" });
+      const r = await fetch(`/api/jobs/${id}`, { cache: "no-store",
+        headers: tagRef.current ? { "if-none-match": tagRef.current } : {} });
+      if (r.status === 304) return;
       const j = await r.json();
-      if (r.ok) setThumb(j.thumb);
+      if (r.ok) { tagRef.current = r.headers.get("etag"); setThumb(j.thumb); }
     } catch { /* giữ nguyên */ }
   }, [id]);
   const active = !!thumb && ["queued", "generating"].includes(thumb.state);
-  useEffect(() => {
-    if (!active) return undefined;
-    const t = setInterval(refresh, 8000);
-    return () => clearInterval(t);
-  }, [active, refresh]);
+  // KHÔNG tự poll trạng thái tạo ảnh — bấm "↻ Cập nhật" để xem tiến độ (tiết kiệm quota Vercel).
 
   if (!d.authed) return null;          // chọn / xoá ảnh là quyết định nội dung → phải mở khoá /keys
   const cands = thumb?.candidates || [];
@@ -801,7 +817,7 @@ function ThumbPreview({ cands, idx, setIdx, onEdit, onClose }) {
         if (stop) return;
         const id = cands[i].drive_id;
         if (preloaded.current.has(id)) continue;
-        await new Promise((res) => { const im = new Image(); im.onload = res; im.onerror = res; im.src = thumbProxy(id); preloaded.current.add(id); if (i !== order[0]) res(); });
+        await new Promise((res) => { const im = new Image(); im.onload = res; im.onerror = res; im.src = cands[i].full || thumbProxy(id); preloaded.current.add(id); if (i !== order[0]) res(); });
       }
     })();
     return () => { stop = true; };
@@ -813,7 +829,7 @@ function ThumbPreview({ cands, idx, setIdx, onEdit, onClose }) {
   return (
     <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div style={{ position: "relative", maxWidth: "94vw", maxHeight: "90vh" }}>
-        <img key={c.drive_id} src={thumbProxy(c.drive_id)} alt="" onLoad={() => setLoading(false)}
+        <img key={c.drive_id} src={c.full || thumbProxy(c.drive_id)} alt="" onLoad={() => setLoading(false)}
           style={{ maxWidth: "94vw", maxHeight: "82vh", borderRadius: 10, display: "block", minWidth: 320, minHeight: 180, background: "#111" }} />
         {loading && <div style={{ position: "absolute", top: 12, left: 12, background: "rgba(0,0,0,.55)", color: "#fff", fontSize: 12, padding: "4px 8px", borderRadius: 6 }}>Đang tải…</div>}
         <button className="btn ghost" onClick={() => go(-1)} style={arrow("left")}>‹</button>

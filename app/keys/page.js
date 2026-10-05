@@ -49,7 +49,8 @@ export default function KeysPage() {
     } catch { /* giữ dữ liệu cũ */ }
     finally { setReady(true); }
   }, []);
-  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+  // KHÔNG poll (tiết kiệm quota Vercel) — bấm "↻ Làm mới" trên đầu trang để tải lại.
+  useEffect(() => { load(); }, [load]);
   useEffect(() => { loadTg(); }, [loadTg]);
   useEffect(() => { loadRw(); }, [loadRw]);
 
@@ -174,6 +175,8 @@ export default function KeysPage() {
           </p>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button className="btn ghost" onClick={() => { load(); loadTg(); loadRw(); }}
+            title="Tải lại (trang không tự cập nhật)">↻ Làm mới</button>
           <a className="btn ghost" href="/">← Dashboard</a>
           <button className="btn ghost" onClick={logout}>🔒 Khoá lại</button>
         </div>

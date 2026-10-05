@@ -5,6 +5,7 @@
 //  · Chuyển tiếp nguyên body (JSON / form-data / nhị phân) + query; trả lại nguyên response BE
 //    (kể cả ảnh nhị phân của /api/thumb/img).
 import { NextResponse } from "next/server";
+import { gzipSync } from "zlib";
 import { isAuthed, rejectCrossSite } from "../../../lib/auth";
 
 export const runtime = "nodejs";
@@ -33,6 +34,9 @@ async function proxy(req, { params }) {
   const headers = new Headers();
   const ct = req.headers.get("content-type");
   if (ct) headers.set("content-type", ct);
+  // ETag: trình duyệt hỏi "còn y nguyên không?" → BE trả 304 rỗng, chuyển thẳng về.
+  const inm = req.headers.get("if-none-match");
+  if (inm) headers.set("if-none-match", inm);
   const auth = req.headers.get("authorization");
   if (auth) headers.set("authorization", auth); // pass-through cho cron (CRON_SECRET)
   headers.set("x-izp-key", KEY);
@@ -48,11 +52,20 @@ async function proxy(req, { params }) {
     return NextResponse.json({ error: `Không gọi được backend: ${e?.message || e}` }, { status: 502 });
   }
 
-  const buf = await res.arrayBuffer();
   const out = new Headers();
-  for (const h of ["content-type", "cache-control", "access-control-allow-origin"]) {
+  for (const h of ["content-type", "cache-control", "access-control-allow-origin", "etag"]) {
     const v = res.headers.get(h);
     if (v) out.set(h, v);
+  }
+  if (res.status === 304) return new Response(null, { status: 304, headers: out });
+  // fetch (undici) đã tự giải nén gzip từ BE → nén lại JSON lớn trước khi trả trình duyệt
+  // (Vercel tính Fast Origin Transfer theo byte function trả ra, chưa nén).
+  let buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length >= 1024 && /json/.test(out.get("content-type") || "")
+      && /\bgzip\b/.test(req.headers.get("accept-encoding") || "")) {
+    buf = gzipSync(buf, { level: 4 });
+    out.set("content-encoding", "gzip");
+    out.set("vary", "accept-encoding");
   }
   return new Response(buf, { status: res.status, headers: out });
 }
