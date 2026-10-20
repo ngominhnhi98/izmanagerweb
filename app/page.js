@@ -267,9 +267,11 @@ export default function Page() {
     }
     if (search.trim()) {
       const q = search.trim().toLowerCase();
-      // tìm theo link · tiêu đề · ghi chú · #id
-      const hay = `${j.url || ""} ${j.source_title || ""} ${j.note || ""} #${j.id}`.toLowerCase();
-      if (!hay.includes(q)) return false;
+      // tìm theo link · tiêu đề · ghi chú · #id · link Drive video (so theo file ID
+      // để link dán vào dạng /view?usp=… vẫn khớp link đã lưu) — phải khớp API /jobs
+      const did = search.trim().match(/(?:\/d\/|[?&]id=)([\w-]{10,})/)?.[1]?.toLowerCase();
+      const hay = `${j.url || ""} ${j.source_title || ""} ${j.note || ""} #${j.id} ${j.link || ""} ${j.drive_in_link || ""}`.toLowerCase();
+      if (!hay.includes(q) && !(did && hay.includes(did))) return false;
     }
     return true;
   });
@@ -406,7 +408,7 @@ export default function Page() {
           🗑 Đã xoá (còn link)
         </button>
         <input type="search" value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔎 Tìm link · tiêu đề · ghi chú · #id"
+          placeholder="🔎 Tìm link · link Drive · tiêu đề · ghi chú · #id"
           style={{ minWidth: 240, flex: "1 1 240px" }} />
         <button className="btn sm ghost" disabled={reloading} onClick={reloadAll}
           title="Tải lại danh sách task (trang không tự cập nhật)">
