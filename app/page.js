@@ -129,6 +129,7 @@ export default function Page() {
   // chỗ DUY NHẤT tra lại link video/short/srt của chúng.
   const [showDeleted, setShowDeleted] = useState(false);
   const [search, setSearch] = useState("");
+  const [showEndpoint, setShowEndpoint] = useState(false);
   const [qServer, setQServer] = useState("");   // bản trễ 400ms, gửi LÊN SERVER
   const [limit, setLimit] = useState(PAGE);     // trần số job kéo về 1 lần
   const [total, setTotal] = useState(0);        // tổng job khớp bộ lọc (ở DB)
@@ -311,9 +312,12 @@ export default function Page() {
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <a className="btn ghost" href="/keys">🔑 API key</a>
+          <button className="btn ghost" onClick={() => setShowEndpoint(true)}>⚙ Endpoint</button>
           <div className="live"><span className="dot pulse" /> live · làm mới 5s</div>
         </div>
       </div>
+
+      {showEndpoint && <EndpointModal onClose={() => setShowEndpoint(false)} />}
 
       {/* stats (bấm để lọc theo trạng thái) */}
       <div className="stats">
@@ -1157,6 +1161,100 @@ function MetaModal({ d, id, copy, onReload, onClose }) {
               </div>
             </div>
           )) : <div className="muted-note">Chưa có.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** ⚙ Endpoint: đổi domain backend (iz_manager_api) ngay trên UI, không cần build lại.
+ *  Lưu ở cookie của trình duyệt này (server ký) — máy khác vẫn dùng BE_URL mặc định. */
+function EndpointModal({ onClose }) {
+  const [st, setSt] = useState(null);
+  const [url, setUrl] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const j = await (await fetch("/api/endpoint", { cache: "no-store" })).json();
+      setSt(j); setUrl((u) => u || j.current || "");
+    } catch (e) { setMsg("⚠ " + (e?.message || e)); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function call(method, body) {
+    setBusy(true); setMsg("");
+    try {
+      const r = await fetch(method === "AUTH" ? "/api/auth" : "/api/endpoint", {
+        method: method === "AUTH" ? "POST" : method,
+        headers: { "content-type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      return j;
+    } catch (e) { setMsg("⚠ " + (e?.message || e)); return null; }
+    finally { setBusy(false); }
+  }
+
+  async function unlock(e) {
+    e.preventDefault();
+    if (await call("AUTH", { password: pw })) { setPw(""); await load(); }
+  }
+  async function test() {
+    const j = await call("POST", { url, test: true });
+    if (!j) return;
+    const p = j.probe;
+    setMsg(p.ok ? `✓ ${j.url} trả HTTP ${p.status} (${p.ms}ms)`
+      : `⚠ ${j.url} — ${p.status ? `HTTP ${p.status}` : p.error} (${p.ms}ms)`);
+  }
+  async function save() {
+    if (await call("POST", { url })) { await load(); setMsg("✓ Đã lưu — đang tải lại…"); setTimeout(() => location.reload(), 600); }
+  }
+  async function reset() {
+    const j = await call("DELETE");
+    if (j) { setUrl(j.current || ""); await load(); setMsg("✓ Đã về mặc định — đang tải lại…"); setTimeout(() => location.reload(), 600); }
+  }
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal" style={{ width: "min(620px,96vw)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="mhd">
+          <b style={{ fontSize: 15 }}>⚙ Endpoint API</b>
+          <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={onClose}>✕</button>
+        </div>
+        <div className="mbody" style={{ display: "grid", gap: 12 }}>
+          {!st ? <div className="empty">Đang tải…</div> : <>
+            <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7 }}>
+              Đang dùng: <b style={{ color: "var(--text)", wordBreak: "break-all" }}>{st.current || "(chưa có)"}</b>
+              {" "}{st.custom
+                ? <span className="badge b-wait">tuỳ chỉnh</span>
+                : <span className="badge b-idle">mặc định</span>}
+              <br />Mặc định (env BE_URL): <span style={{ wordBreak: "break-all" }}>{st.default || "(trống)"}</span>
+            </div>
+            {!st.authed ? (
+              <form onSubmit={unlock} style={{ display: "flex", gap: 8 }}>
+                <input type="password" placeholder="Mật khẩu quản trị để sửa" value={pw}
+                  onChange={(e) => setPw(e.target.value)} style={{ flex: 1 }} autoFocus />
+                <button className="btn primary" disabled={busy || !pw}>Mở khoá</button>
+              </form>
+            ) : <>
+              <input value={url} onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://iz-manager-api.vercel.app" spellCheck={false} />
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn" disabled={busy || !url.trim()} onClick={test}>🔌 Kiểm tra</button>
+                <button className="btn primary" disabled={busy || !url.trim()} onClick={save}>💾 Lưu</button>
+                {st.custom && <button className="btn danger" disabled={busy} onClick={reset}>↺ Về mặc định</button>}
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--muted2)" }}>
+                Chỉ nhập domain gốc (không cần “/api”). Lưu trên trình duyệt này — thiết bị khác cần đặt lại
+                hoặc đổi env BE_URL trên Vercel.
+              </div>
+            </>}
+            {msg && <div style={{ fontSize: 12.5 }}>{msg}</div>}
+          </>}
         </div>
       </div>
     </div>

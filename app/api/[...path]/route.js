@@ -7,17 +7,18 @@
 import { NextResponse } from "next/server";
 import { gzipSync } from "zlib";
 import { isAuthed, rejectCrossSite } from "../../../lib/auth";
+import { backendUrl } from "../../../lib/backend";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const BE = (process.env.BE_URL || "").replace(/\/$/, "");
 const KEY = process.env.API_SECRET || "";
 
 async function proxy(req, { params }) {
   const path = (params.path || []).join("/");
   const method = req.method;
   const mutating = method !== "GET" && method !== "HEAD";
+  const BE = backendUrl(req);   // env BE_URL, hoặc endpoint ghi đè từ ⚙ Endpoint
 
   // CSRF: chặn mutation từ origin khác (browser luôn gửi Origin). Server-to-server (cron,
   // không Origin) được cho qua — giống hành vi rejectCrossSite cũ.
@@ -26,7 +27,7 @@ async function proxy(req, { params }) {
     if (csrf) return csrf;
   }
   if (!BE || !KEY) {
-    return NextResponse.json({ error: "BE_URL / API_SECRET chưa cấu hình ở FE" }, { status: 500 });
+    return NextResponse.json({ error: "BE_URL / API_SECRET chưa cấu hình ở FE (đặt endpoint ở ⚙ Endpoint)" }, { status: 500 });
   }
 
   const url = new URL(req.url);
